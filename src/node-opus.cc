@@ -1,5 +1,9 @@
 #include "napi.h"
-#include "../deps/opus/include/opus.h"
+#include "opus.h"
+#include <cmath>
+#include <climits>
+#include <cstring>
+#include <cstdint>
 #include "node-opus.h"
 
 using namespace Napi;
@@ -54,7 +58,12 @@ NodeOpusEncoder::NodeOpusEncoder(const CallbackInfo& args): ObjectWrap<NodeOpusE
 			Napi::TypeError::New(args.Env(), "Expected rate to be a number").ThrowAsJavaScriptException();
 			return;
 		}
-		this->rate = args[0].ToNumber().Int32Value();
+		const double value = args[0].As<Number>().DoubleValue();
+		if (!std::isfinite(value) || (value != 8000 && value != 12000 && value != 16000 && value != 24000 && value != 48000)) {
+			Napi::RangeError::New(args.Env(), "Invalid Opus sample rate").ThrowAsJavaScriptException();
+			return;
+		}
+		this->rate = static_cast<opus_int32>(value);
 	}
 
 	if (args.Length() >= 2 && !args[1].IsUndefined()) {
@@ -62,7 +71,12 @@ NodeOpusEncoder::NodeOpusEncoder(const CallbackInfo& args): ObjectWrap<NodeOpusE
 			Napi::TypeError::New(args.Env(), "Expected channels to be a number").ThrowAsJavaScriptException();
 			return;
 		}
-		this->channels = args[1].ToNumber().Int32Value();
+		const double value = args[1].As<Number>().DoubleValue();
+		if (value != 1 && value != 2) {
+			Napi::RangeError::New(args.Env(), "Expected one or two channels").ThrowAsJavaScriptException();
+			return;
+		}
+		this->channels = static_cast<int>(value);
 	}
 
 	this->application = OPUS_APPLICATION_AUDIO;
@@ -76,7 +90,7 @@ NodeOpusEncoder::~NodeOpusEncoder() {
 	this->encoder = nullptr;
 	this->decoder = nullptr;
 
-	if (this->outPcm) delete this->outPcm;
+	if (this->outPcm) delete[] this->outPcm;
 	this->outPcm = nullptr;
 }
 
@@ -119,10 +133,28 @@ Napi::Value NodeOpusEncoder::Encode(const CallbackInfo& args) {
 	Buffer<char> buf = args[0].As<Buffer<char>>();
 	char* pcmData = buf.Data();
 	opus_int16* pcm = reinterpret_cast<opus_int16*>(pcmData);
-	int frameSize = buf.Length() / 2 / this->channels;
+	if (buf.Length() == 0 || buf.Length() % (2 * this->channels) != 0 || buf.Length() > static_cast<size_t>(2 * this->channels * MAX_FRAME_SIZE)) {
+        Napi::RangeError::New(env, "Invalid PCM frame length").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    int frameSize = static_cast<int>(buf.Length() / 2 / this->channels);
+    const bool validFrame = frameSize == rate / 400 || frameSize == rate / 200 || frameSize == rate / 100 || frameSize == rate / 50 || frameSize == rate / 25 || frameSize == 3 * rate / 50 || frameSize == 4 * rate / 50 || frameSize == rate / 10 || frameSize == 6 * rate / 50;
+    if (!validFrame) {
+        Napi::RangeError::New(env, "Invalid Opus frame duration").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    if (reinterpret_cast<uintptr_t>(pcmData) % alignof(opus_int16) != 0) {
+        alignedPcm.resize(buf.Length() / 2);
+        std::memcpy(alignedPcm.data(), pcmData, buf.Length());
+        pcm = alignedPcm.data();
+    }
 
 	int compressedLength = opus_encode(this->encoder, pcm, frameSize, &(this->outOpus[0]), MAX_PACKET_SIZE);
 
+	if (compressedLength < 0) {
+        Napi::Error::New(env, opus_strerror(compressedLength)).ThrowAsJavaScriptException();
+        return env.Null();
+    }
 	Buffer<char> actualBuf = Buffer<char>::Copy(env, reinterpret_cast<char*>(this->outOpus), compressedLength);
 
 	if (!actualBuf.IsEmpty()) return actualBuf;
@@ -146,7 +178,11 @@ Napi::Value NodeOpusEncoder::Decode(const CallbackInfo& args) {
 
 	Buffer<unsigned char> buf = args[0].As<Buffer<unsigned char>>();
 	unsigned char* compressedData = buf.Data();
-	size_t compressedDataLength = buf.Length();
+	if (buf.Length() > INT_MAX) {
+        Napi::RangeError::New(env, "Opus packet is too large").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    const opus_int32 compressedDataLength = static_cast<opus_int32>(buf.Length());
 
 	if (this->EnsureDecoder() != OPUS_OK) {
 		Napi::Error::New(env, "Could not create decoder. Check the decoder parameters").ThrowAsJavaScriptException();
@@ -272,6 +308,9 @@ Napi::Value NodeOpusEncoder::GetBitrate(const CallbackInfo& args) {
 }
 
 Object Init(Napi::Env env, Object exports) {
+	exports.Set("getLibopusVersion", Function::New(env, [](const CallbackInfo& args) {
+        return String::New(args.Env(), opus_get_version_string());
+    }));
 	return NodeOpusEncoder::Init(env, exports);
 }
 

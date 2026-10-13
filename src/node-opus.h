@@ -1,3 +1,4 @@
+#include <vector>
 using namespace Napi;
 
 #define FRAME_SIZE 960
@@ -16,6 +17,7 @@ class NodeOpusEncoder : public ObjectWrap<NodeOpusEncoder> {
 
 		unsigned char outOpus[MAX_PACKET_SIZE];
 		opus_int16* outPcm;
+        std::vector<opus_int16> alignedPcm;
 
 	protected:
 		int EnsureEncoder();

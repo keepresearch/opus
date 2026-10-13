@@ -1,86 +1,66 @@
-name: Prebuild
+name: Publish rolling Release
 on:
-  release:
-    types: [published]
+  push:
+    tags: ['rolling-*']
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
+  identity:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Verify tag identity and rolling ancestry
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          test "$RELEASE_TAG" = "rolling-$(node -p 'require("./package.json").version')"
+          git fetch origin rolling
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/rolling
   build:
-    name: Prebuild node ${{ matrix.node }} on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [
-          macos-14,
-          macos-15,
-          macos-26,
-          ubuntu-22.04,
-          ubuntu-22.04-arm,
-          ubuntu-24.04,
-          ubuntu-24.04-arm,
-          windows-2022,
-          windows-2025
-        ]
-        node: [20, 22, 24, 25]
+    needs: identity
+    uses: ./.github/workflows/native.yml
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
-          submodules: true
-
-      - name: Install Node v${{ matrix.node }}
-        uses: actions/setup-node@v6
+          node-version: 22
+      - uses: actions/download-artifact@v4
         with:
-          node-version: ${{ matrix.node }}
-
-      - name: Install dependencies
-        run: npm install --build-from-source
-
-      - name: Package prebuild
-        run: npm run build
-
-      - name: Upload prebuild asset
-        uses: icrawl/action-artifact@v2
+          pattern: native-*
+          merge-multiple: true
+          path: build/assets
+      - name: Verify and assemble complete Release
+        run: node scripts/manifest.js build/assets
+      - name: Publish attachments only after all platform tests pass
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          path: 'build/stage/**/*.tar.gz'
-
-  build_musl:
-    name: Prebuild node ${{ matrix.node }} on ${{ matrix.os }} (musl)
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm]
-        node: [20, 22, 24, 25]
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft >/dev/null 2>&1; then
+            echo 'Release already exists; do not overwrite versioned attachments.' >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" --verify-tag --draft --prerelease --title "$RELEASE_TAG" --notes 'libopus 1.6.1; N-API v3; x64 runtime SIMD dispatch and ARM64 NEON. Linux glibc >= 2.28 / musl >= 1.2.5, macOS >= 11.0. No npm publication. See README and manifest.json for installation and build identities.'
+          gh release upload "$RELEASE_TAG" build/assets/*.node build/assets/manifest.json build/assets/LICENSES.txt
+          gh release edit "$RELEASE_TAG" --draft=false
+  consumer:
+    needs: publish
+    runs-on: ubuntu-24.04
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
-          submodules: true
-
-      # Workaround https://github.com/actions/runner/issues/801
-      - name: Setup container
-        run: |
-          docker run --name runner --rm -it -d -v $PWD:/node-opus -w /node-opus node:${{ matrix.node }}-alpine
-
-      - name: Setup env with Node v${{ matrix.node }}
-        run: |
-          docker exec runner apk add --update
-          docker exec runner apk add --no-cache ca-certificates git curl build-base python3 g++ make
-
-      - name: Install dependencies
-        run: docker exec runner npm install --build-from-source
-
-      - name: Package prebuild
-        run: docker exec runner npm run build
-
-      - name: Stop container
-        run: docker rm -f runner
-
-      - name: Upload prebuild asset
-        uses: icrawl/action-artifact@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          path: 'build/stage/**/*.tar.gz'
+          node-version: 22
+      - run: npm install --global pnpm@12.5.1
+      - name: Install the public Git dependency with compilation disabled
+        run: node scripts/check-consumer.js "$GITHUB_SHA"

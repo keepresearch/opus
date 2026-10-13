@@ -1,0 +1,104 @@
+name: Native matrix
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  native:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64-glibc
+            runner: ubuntu-24.04
+            image: quay.io/pypa/manylinux_2_28_x86_64
+            arch: x64
+          - target: linux-arm64-glibc
+            runner: ubuntu-24.04-arm
+            image: quay.io/pypa/manylinux_2_28_aarch64
+            arch: arm64
+          - target: linux-x64-musl
+            runner: ubuntu-24.04
+            image: node:22-alpine3.22
+          - target: linux-arm64-musl
+            runner: ubuntu-24.04-arm
+            image: node:22-alpine3.22
+          - target: darwin-x64
+            runner: macos-15-intel
+          - target: darwin-arm64
+            runner: macos-14
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        if: startsWith(matrix.target, 'darwin')
+        with:
+          node-version: 22
+      - name: Build and test macOS
+        if: startsWith(matrix.target, 'darwin')
+        run: |
+          npm ci --ignore-scripts
+          npm run build:source
+          npm test
+          npm run typecheck
+          npm run lint
+          npm run package:binary
+      - name: Build and test Linux with a portable libc baseline
+        if: startsWith(matrix.target, 'linux')
+        env:
+          OPUS_IMAGE: ${{ matrix.image }}
+          OPUS_TARGET: ${{ matrix.target }}
+          OPUS_ARCH: ${{ matrix.arch }}
+        run: |
+          docker pull "$OPUS_IMAGE"
+          export OPUS_BUILD_IMAGE=$(docker image inspect "$OPUS_IMAGE" --format '{{index .RepoDigests 0}}')
+          docker run --rm -v "$PWD:/workspace" -w /workspace -e GITHUB_SHA -e OPUS_TARGET -e OPUS_ARCH -e OPUS_BUILD_IMAGE "$OPUS_IMAGE" sh scripts/build-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.target }}
+          path: build/assets/*
+          retention-days: 3
+  node-compatibility:
+    needs: native
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22, 24, 26]
+        platform:
+          - target: linux-x64-glibc
+            runner: ubuntu-24.04
+          - target: linux-arm64-glibc
+            runner: ubuntu-24.04-arm
+          - target: linux-x64-musl
+            runner: ubuntu-24.04
+          - target: linux-arm64-musl
+            runner: ubuntu-24.04-arm
+          - target: darwin-x64
+            runner: macos-15-intel
+          - target: darwin-arm64
+            runner: macos-14
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-${{ matrix.platform.target }}
+          path: build/assets
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Load the prebuilt binary without compiling
+        env:
+          OPUS_TARGET: ${{ matrix.platform.target }}
+          OPUS_NODE: ${{ matrix.node }}
+        run: |
+          mkdir -p prebuild
+          cp build/assets/*.node prebuild/opus.node
+          if [ "${OPUS_TARGET##*-}" = musl ]; then
+            docker run --rm -v "$PWD:/workspace" -w /workspace "node:$OPUS_NODE-alpine" node --expose-gc --test tests/codec.test.js
+          else
+            node --expose-gc --test tests/codec.test.js
+          fi
