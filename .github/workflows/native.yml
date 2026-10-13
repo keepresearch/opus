@@ -53,7 +53,8 @@ jobs:
           OPUS_ARCH: ${{ matrix.arch }}
         run: |
           docker pull "$OPUS_IMAGE"
-          export OPUS_BUILD_IMAGE=$(docker image inspect "$OPUS_IMAGE" --format '{{index .RepoDigests 0}}')
+          OPUS_BUILD_IMAGE=$(docker image inspect "$OPUS_IMAGE" --format '{{index .RepoDigests 0}}')
+          export OPUS_BUILD_IMAGE
           docker run --rm -v "$PWD:/workspace" -w /workspace -e GITHUB_SHA -e OPUS_TARGET -e OPUS_ARCH -e OPUS_BUILD_IMAGE "$OPUS_IMAGE" sh scripts/build-linux.sh
       - uses: actions/upload-artifact@v4
         with:

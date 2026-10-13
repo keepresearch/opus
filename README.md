@@ -14,11 +14,11 @@ Release 发布且消费者验证成功后，依赖固定到该版本的完整 co
 }
 ```
 
-pnpm 需要明确允许该包的安装脚本（按 pnpm 版本使用 allowBuilds 或 onlyBuiltDependencies）。例如当前 pnpm 12：
+pnpm 对 Git 依赖按仓库来源审批安装脚本，仅允许包名不足以授权。pnpm 12 配置如下：
 
 ```yaml
 allowBuilds:
-  '@discordjs/opus': true
+  '@discordjs/opus@git+https://github.com/keepresearch/opus.git': true
 ```
 
 正常安装匿名下载 **keepresearch/opus 自己的固定版本 Release** 的 manifest 和 `.node`，校验版本、目标和 SHA-256 后安装。无需 GitHub token、Rust 或原生编译器；不自动回退源码、不下载上游旧版产物。需要网络访问 GitHub/GitHub Release CDN。Commit 和版本 tag 必须一一对应；不要将未发布的 rolling HEAD 用于普通安装。
@@ -63,7 +63,7 @@ npm run lint
 
 main 保留上游源码基线，但删除继承的旧工作流以避免误触；默认分支及所有维护均使用 rolling。rolling push / PR 跑六目标原生构建、回归和跨 Node 测试，不自动发布。版本号在 package.json，**所有发布 tag 以 rolling- 开头**，命名固定为 `rolling-${version}`，tag commit 必须属于 rolling。
 
-首次版本为 `0.10.1-keepresearch.1`，tag 为 `rolling-0.10.1-keepresearch.1`。推送 tag 后，Actions 全部验证通过才生成带六个 `.node`、manifest.json 和 LICENSES.txt 的预发布 Release。附件名称含版本、N-API、系统、架构和 libc；不按 Node ABI 或具体 glibc 小版本重复构建。已公开的附件不可覆盖，修复使用新版本与 tag。随后 CI 在隔离消费者验证真实公开 Git 安装，并禁止编译。发布完成与消费者验证通过分别判断。
+当前版本为 `0.10.1-keepresearch.2`，tag 为 `rolling-0.10.1-keepresearch.2`。推送 tag 后，Actions 全部验证通过才生成带六个 `.node`、manifest.json 和 LICENSES.txt 的预发布 Release。附件名称含版本、N-API、系统、架构和 libc；不按 Node ABI 或具体 glibc 小版本重复构建。已公开的附件不可覆盖，修复使用新版本与 tag。随后 CI 在隔离消费者验证真实公开 Git 安装，并禁止编译。发布完成与消费者验证通过分别判断。
 
 使用公开仓库标准 runner，不使用 larger runner。构建权限只读，发布任务用当前仓库 GITHUB_TOKEN 的 contents:write，无 npm token；不使用 pull_request_target。Actions artifacts 只作内部中转并保留 3 天，长期附件位于 Releases。
 

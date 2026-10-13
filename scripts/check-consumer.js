@@ -22,7 +22,10 @@ try {
       2,
     ),
   );
-  writeFileSync(join(directory, 'pnpm-workspace.yaml'), 'allowBuilds:\n  "@discordjs/opus": true\n');
+  writeFileSync(
+    join(directory, 'pnpm-workspace.yaml'),
+    'allowBuilds:\n  "@discordjs/opus@git+https://github.com/keepresearch/opus.git": true\n',
+  );
   // Any accidental source build fails even on a runner that has a compiler installed.
   run('pnpm', ['install'], {
     ...process.env,
